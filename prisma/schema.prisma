@@ -1,0 +1,396 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ==========================================
+// ENUMS
+// ==========================================
+
+enum UserRole {
+  SUPER_ADMIN
+  BUSINESS_ADMIN
+  STAFF
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum CancelledBy {
+  CUSTOMER
+  BUSINESS
+}
+
+enum NotificationChannel {
+  EMAIL
+  SMS
+}
+
+enum NotificationType {
+  CONFIRMATION
+  REMINDER
+  CANCELLATION
+  RESCHEDULE
+}
+
+enum FieldType {
+  TEXT
+  TEXTAREA
+  SELECT
+  CHECKBOX
+  DATE
+}
+
+enum PlanType {
+  FREE
+  BASIC
+  PREMIUM
+}
+
+// ==========================================
+// TENANT / BUSINESS
+// ==========================================
+
+model Business {
+  id                  String   @id @default(uuid())
+  name                String
+  slug                String   @unique
+  email               String
+  phone               String?
+  address             String?
+  timezone            String   @default("UTC")
+  logoUrl             String?
+  brandColor          String   @default("#6c3aed")
+  planType            PlanType @default(FREE)
+  status              String   @default("Active")
+  defaultAvailability Json?    @default("[]")
+  cancellationHours   Int      @default(0)
+  reminderTiming      Json     @default("[1440, 60]")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  deletedAt           DateTime?
+
+  users            User[]
+  services         Service[]
+  serviceCategories ServiceCategory[]
+  staff            Staff[]
+  locations        Location[]
+  bookings         Booking[]
+  notificationLogs NotificationLog[]
+  slotCache        SlotCache[]
+
+  @@index([deletedAt])
+}
+
+// ==========================================
+// AUTH / USERS
+// ==========================================
+
+model User {
+  id                String    @id @default(uuid())
+  businessId        String?
+  email             String    @unique
+  passwordHash      String
+  firstName         String
+  lastName          String
+  phone             String?
+  role              UserRole
+  status            String    @default("Active")
+  failedAttempts    Int       @default(0)
+  lockedUntil       DateTime?
+  lastLogin         DateTime?
+  resetToken        String?   @unique
+  resetTokenExpires DateTime?
+  staffId           String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime?
+
+  business Business? @relation(fields: [businessId], references: [id])
+
+  @@index([businessId])
+  @@index([role])
+  @@index([deletedAt])
+}
+
+// ==========================================
+// STAFF
+// ==========================================
+
+model Staff {
+  id          String   @id @default(uuid())
+  businessId  String
+  name        String
+  email       String?
+  phone       String?
+  photoUrl    String?
+  color       String   @default("#6366f1")
+  bio         String?
+  isActive    Boolean  @default(true)
+  bufferBefore Int     @default(0)
+  bufferAfter  Int     @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  business      Business                @relation(fields: [businessId], references: [id])
+  services      StaffService[]
+  availabilities StaffAvailability[]
+  overrides     StaffAvailabilityOverride[]
+  bookings      Booking[]
+
+  @@index([businessId])
+}
+
+// ==========================================
+// STAFF <-> SERVICE (explicit many-to-many)
+// ==========================================
+
+model StaffService {
+  staffId   String
+  serviceId String
+
+  staff   Staff   @relation(fields: [staffId], references: [id])
+  service Service @relation(fields: [serviceId], references: [id])
+
+  @@id([staffId, serviceId])
+}
+
+// ==========================================
+// STAFF AVAILABILITY
+// ==========================================
+
+model StaffAvailability {
+  id         String   @id @default(uuid())
+  staffId    String
+  dayOfWeek  Int
+  startTime  DateTime
+  endTime    DateTime
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  staff Staff @relation(fields: [staffId], references: [id])
+
+  @@index([staffId])
+}
+
+model StaffAvailabilityOverride {
+  id        String   @id @default(uuid())
+  staffId   String
+  date      DateTime
+  startTime DateTime?
+  endTime   DateTime?
+  reason    String?
+  createdAt DateTime @default(now())
+
+  staff Staff @relation(fields: [staffId], references: [id])
+
+  @@index([staffId])
+}
+
+// ==========================================
+// SERVICE & CATEGORY
+// ==========================================
+
+model ServiceCategory {
+  id          String   @id @default(uuid())
+  businessId  String
+  name        String
+  description String?
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  business Business @relation(fields: [businessId], references: [id])
+  services Service[]
+
+  @@index([businessId])
+}
+
+model Service {
+  id           String   @id @default(uuid())
+  businessId   String
+  categoryId   String?
+  name         String
+  description  String?
+  duration     Int
+  price        Decimal  @default(0) @db.Decimal(10, 2)
+  color        String   @default("#6366f1")
+  bufferBefore Int      @default(0)
+  bufferAfter  Int      @default(0)
+  maxPerSlot   Int      @default(1)
+  isActive     Boolean  @default(true)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  business     Business             @relation(fields: [businessId], references: [id])
+  category     ServiceCategory?     @relation(fields: [categoryId], references: [id])
+  staff        StaffService[]
+  customFields ServiceCustomField[]
+  locations    LocationService[]
+  bookings     Booking[]
+
+  @@index([businessId])
+  @@index([categoryId])
+}
+
+model ServiceCustomField {
+  id         String    @id @default(uuid())
+  serviceId  String
+  label      String
+  fieldType  FieldType
+  isRequired Boolean   @default(false)
+  options    Json?
+  sortOrder  Int       @default(0)
+  createdAt  DateTime  @default(now())
+
+  service Service @relation(fields: [serviceId], references: [id])
+
+  @@index([serviceId])
+}
+
+// ==========================================
+// LOCATION
+// ==========================================
+
+model Location {
+  id           String   @id @default(uuid())
+  businessId   String
+  name         String
+  address      String?
+  phone        String?
+  virtualLink  String?
+  instructions String?
+  isDefault    Boolean  @default(false)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  business Business        @relation(fields: [businessId], references: [id])
+  services  LocationService[]
+  bookings  Booking[]
+
+  @@index([businessId])
+}
+
+model LocationService {
+  locationId String
+  serviceId  String
+
+  location Location @relation(fields: [locationId], references: [id])
+  service  Service  @relation(fields: [serviceId], references: [id])
+
+  @@id([locationId, serviceId])
+}
+
+// ==========================================
+// BOOKING
+// ==========================================
+
+model Booking {
+  id                  String        @id @default(uuid())
+  businessId          String
+  serviceId           String
+  staffId             String?
+  locationId          String?
+  bookingRef          String        @unique
+  customerName        String
+  customerEmail       String
+  customerPhone       String
+  notes               String?
+  customFieldAnswers  Json?
+  startTime           DateTime
+  endTime             DateTime
+  duration            Int
+  price               Decimal       @default(0) @db.Decimal(10, 2)
+  status              BookingStatus @default(PENDING)
+  cancellationReason  String?
+  cancelledBy         CancelledBy?
+  manageToken         String        @unique
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  business         Business         @relation(fields: [businessId], references: [id])
+  service          Service          @relation(fields: [serviceId], references: [id])
+  staff            Staff?           @relation(fields: [staffId], references: [id])
+  location         Location?        @relation(fields: [locationId], references: [id])
+  notificationLogs NotificationLog[]
+
+  @@index([businessId])
+  @@index([serviceId])
+  @@index([staffId])
+  @@index([startTime, endTime])
+  @@index([status])
+  @@index([manageToken])
+  @@index([businessId, startTime])
+}
+
+// ==========================================
+// NOTIFICATION
+// ==========================================
+
+model NotificationLog {
+  id         String             @id @default(uuid())
+  businessId String
+  bookingId  String
+  type       NotificationType
+  channel    NotificationChannel
+  recipient  String
+  sentAt     DateTime           @default(now())
+  status     String             @default("Sent")
+
+  business Business @relation(fields: [businessId], references: [id])
+  booking  Booking  @relation(fields: [bookingId], references: [id])
+
+  @@index([businessId])
+  @@index([bookingId])
+}
+
+// ==========================================
+// AUDIT
+// ==========================================
+
+model AuditLog {
+  id         BigInt   @id @default(autoincrement())
+  businessId String?
+  userId     String?
+  action     String
+  entityType String
+  entityId   String?
+  oldValues  Json?
+  newValues  Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([businessId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+// ==========================================
+// SLOT CACHE
+// ==========================================
+
+model SlotCache {
+  id           String   @id @default(uuid())
+  businessId   String
+  serviceId    String
+  staffId      String?
+  date         DateTime
+  startTime    DateTime
+  endTime      DateTime
+  computedAt   DateTime @default(now())
+  expiresAt    DateTime
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@unique([businessId, serviceId, staffId, date, startTime])
+  @@index([businessId, date, expiresAt])
+}
