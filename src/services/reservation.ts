@@ -23,14 +23,14 @@ export async function reserveSlot(
     where: {
       businessId: tenantId,
       serviceId,
-      staffId: staffId ?? null,
+      staffId: staffId ?? undefined,
       startTime,
       isAvailable: true,
     },
   });
 
   if (!slot) {
-    return { success: false, reason: slot === null ? 'not_found' : 'not_available' };
+    return { success: false, reason: 'not_found' };
   }
 
   const token = crypto.randomUUID();
@@ -46,13 +46,25 @@ export async function reserveSlot(
   return { success: true, reservationToken: token, expiresAt };
 }
 
-const RELEASE_SCRIPT = `
+const VERIFY_SCRIPT = `return redis.call("GET", KEYS[1]) == ARGV[1]`;
+const DELETE_SCRIPT = `
 if redis.call("GET", KEYS[1]) == ARGV[1] then
   return redis.call("DEL", KEYS[1])
 else
   return 0
 end
 `;
+
+export async function verifyReservation(
+  tenantId: string,
+  staffId: string | null,
+  startTime: string,
+  token: string,
+): Promise<boolean> {
+  const key = lockKey(tenantId, staffId, startTime);
+  const result = await redis.eval(VERIFY_SCRIPT, 1, key, token);
+  return result === 1;
+}
 
 export async function releaseSlot(
   tenantId: string,
@@ -61,6 +73,91 @@ export async function releaseSlot(
   token: string,
 ): Promise<boolean> {
   const key = lockKey(tenantId, staffId, startTime);
-  const result = await redis.eval(RELEASE_SCRIPT, 1, key, token);
+  const result = await redis.eval(DELETE_SCRIPT, 1, key, token);
   return result === 1;
+}
+
+// ── Confirm: safe transaction with lock held ─────────────────────
+
+export interface BookingConfirmation {
+  bookingRef: string;
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string;
+  notes?: string;
+  startTime: Date;
+  duration: number;
+  price: number;
+  serviceId: string;
+  staffId: string | null;
+  locationId?: string | null;
+  customFieldAnswers?: Record<string, unknown>;
+}
+
+export async function confirmBooking(
+  tenantId: string,
+  reservationToken: string,
+  data: BookingConfirmation,
+): Promise<{ booking: any }> {
+  const staffId = data.staffId;
+  const startTimeISO = data.startTime.toISOString();
+
+  const valid = await verifyReservation(tenantId, staffId, startTimeISO, reservationToken);
+  if (!valid) {
+    throw Object.assign(new Error('Reservation token expired or invalid'), { code: 'TOKEN_EXPIRED' });
+  }
+
+  const bookingRef = `BK-${Date.now().toString(36).toUpperCase()}-${crypto.randomUUID().slice(0, 4).toUpperCase()}`;
+  const manageToken = crypto.randomUUID();
+
+  const booking = await prisma.$withBypass().$transaction(async (tx) => {
+    const slot = await tx.slotCache.findFirst({
+      where: {
+        businessId: tenantId,
+        serviceId: data.serviceId,
+        staffId: staffId ?? undefined,
+        startTime: data.startTime,
+      },
+    });
+
+    if (!slot || !slot.isAvailable) {
+      throw Object.assign(new Error('Slot no longer available'), { code: 'SLOT_UNAVAILABLE' });
+    }
+
+    const created = await tx.booking.create({
+      data: {
+        businessId: tenantId,
+        bookingRef,
+        manageToken,
+        customerName: data.customerName,
+        customerEmail: data.customerEmail,
+        customerPhone: data.customerPhone,
+        notes: data.notes,
+        startTime: data.startTime,
+        endTime: new Date(data.startTime.getTime() + data.duration * 60000),
+        duration: data.duration,
+        price: data.price,
+        serviceId: data.serviceId,
+        staffId: staffId ?? undefined,
+        locationId: data.locationId ?? undefined,
+        customFieldAnswers: (data.customFieldAnswers ?? undefined) as any,
+      },
+    });
+
+    await tx.slotCache.updateMany({
+      where: {
+        businessId: tenantId,
+        serviceId: data.serviceId,
+        staffId: staffId ?? undefined,
+        startTime: data.startTime,
+      },
+      data: { isAvailable: false },
+    });
+
+    return created;
+  });
+
+  await releaseSlot(tenantId, staffId, startTimeISO, reservationToken);
+
+  return { booking };
 }
