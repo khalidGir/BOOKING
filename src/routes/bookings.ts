@@ -1,11 +1,19 @@
 import { Router } from 'express';
-import { handleReserve, handleConfirm, handleRelease, handleCancel } from '../controllers/bookings.js';
+import { requireRoles } from '../middleware/rbac.js';
+import { validate } from '../middleware/validate.js';
+import { reserveSlotSchema, confirmBookingSchema } from '../validations/booking.validation.js';
+import {
+  handleReserve,
+  handleConfirm,
+  handleRelease,
+  handleCancel,
+} from '../controllers/bookings.js';
 
 const router = Router();
 
-router.post('/reserve', handleReserve);
-router.post('/confirm', handleConfirm);
-router.post('/release', handleRelease);
-router.post('/:bookingId/cancel', handleCancel);
+router.post('/reserve', requireRoles('BUSINESS_ADMIN', 'STAFF'), validate(reserveSlotSchema), handleReserve);
+router.post('/confirm', requireRoles('BUSINESS_ADMIN', 'STAFF'), validate(confirmBookingSchema), handleConfirm);
+router.post('/release', requireRoles('BUSINESS_ADMIN', 'STAFF'), handleRelease);
+router.post('/:bookingId/cancel', requireRoles('BUSINESS_ADMIN', 'STAFF'), handleCancel);
 
 export { router as bookingsRouter };
