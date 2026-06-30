@@ -379,18 +379,19 @@ model AuditLog {
 // ==========================================
 
 model SlotCache {
-  id           String   @id @default(uuid())
-  businessId   String
-  serviceId    String
-  staffId      String?
-  date         DateTime
-  startTime    DateTime
-  endTime      DateTime
-  computedAt   DateTime @default(now())
-  expiresAt    DateTime
+  id          String   @id @default(uuid())
+  businessId  String
+  serviceId   String
+  staffId     String?
+  startTime   DateTime
+  endTime     DateTime
+  isAvailable Boolean  @default(true)
+  computedAt  DateTime @default(now())
+  expiresAt   DateTime
 
   business Business @relation(fields: [businessId], references: [id])
 
-  @@unique([businessId, serviceId, staffId, date, startTime])
-  @@index([businessId, date, expiresAt])
+  @@unique([businessId, serviceId, staffId, startTime])
+  @@index([businessId, serviceId, startTime])
+  @@index([businessId, computedAt])
 }

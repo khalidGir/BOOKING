@@ -239,9 +239,9 @@ CREATE TABLE "SlotCache" (
     "businessId" UUID NOT NULL,
     "serviceId" UUID NOT NULL,
     "staffId" UUID,
-    "date" TIMESTAMPTZ NOT NULL,
     "startTime" TIMESTAMPTZ NOT NULL,
     "endTime" TIMESTAMPTZ NOT NULL,
+    "isAvailable" BOOLEAN NOT NULL DEFAULT true,
     "computedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "expiresAt" TIMESTAMPTZ NOT NULL,
     CONSTRAINT "SlotCache_pkey" PRIMARY KEY ("id")
@@ -301,8 +301,9 @@ CREATE INDEX "AuditLog_entityType_entityId_idx" ON "AuditLog"("entityType", "ent
 CREATE INDEX "AuditLog_createdAt_idx" ON "AuditLog"("createdAt");
 
 -- CreateIndexes for SlotCache
-CREATE UNIQUE INDEX "SlotCache_businessId_serviceId_staffId_date_startTime_key" ON "SlotCache"("businessId", "serviceId", "staffId", "date", "startTime");
-CREATE INDEX "SlotCache_businessId_date_expiresAt_idx" ON "SlotCache"("businessId", "date", "expiresAt");
+CREATE UNIQUE INDEX "SlotCache_businessId_serviceId_staffId_startTime_key" ON "SlotCache"("businessId", "serviceId", "staffId", "startTime");
+CREATE INDEX "SlotCache_businessId_serviceId_startTime_idx" ON "SlotCache"("businessId", "serviceId", "startTime");
+CREATE INDEX "SlotCache_businessId_computedAt_idx" ON "SlotCache"("businessId", "computedAt");
 
 -- ==========================================
 -- PARTIAL UNIQUE INDEX FOR STAFF EMAIL

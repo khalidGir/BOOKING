@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser';
 import { authMiddleware } from './middleware/auth.js';
 import { tenantContextMiddleware } from './middleware/tenant-context.js';
 import { servicesRouter } from './routes/services.js';
+import { bookingsRouter } from './routes/bookings.js';
 
 const app = express();
 
@@ -21,5 +22,6 @@ app.get('/health', (_req, res) => {
 });
 
 app.use('/api/services', servicesRouter);
+app.use('/api/v1/bookings', bookingsRouter);
 
 export { app };
