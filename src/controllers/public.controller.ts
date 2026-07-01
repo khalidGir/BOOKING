@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { prisma } from '../utils/prisma.js';
 import { publicSlotsQuerySchema } from '../validations/booking.validation.js';
+import { publicBookSlot } from '../services/reservation.js';
 
 export async function getBusinessServices(req: Request, res: Response): Promise<void> {
   try {
@@ -90,5 +91,46 @@ export async function getAvailableSlots(req: Request, res: Response): Promise<vo
   } catch (error) {
     console.error('[public:slots]', error);
     res.status(500).json({ error: 'Failed to fetch available slots' });
+  }
+}
+
+export async function createPublicBooking(req: Request, res: Response): Promise<void> {
+  try {
+    const slug = String(req.params.slug);
+
+    const business = await prisma.$withBypass().business.findUnique({
+      where: { slug },
+      select: { id: true, name: true },
+    });
+
+    if (!business) {
+      res.status(404).json({ error: 'Business not found' });
+      return;
+    }
+
+    const { serviceId, staffId, startTime, duration, price, customerName, customerEmail, customerPhone, notes } = req.body;
+
+    const result = await publicBookSlot(business.id, {
+      serviceId,
+      staffId: staffId ?? null,
+      startTime: new Date(startTime),
+      duration,
+      price,
+      customerName,
+      customerEmail,
+      customerPhone,
+      notes,
+    });
+
+    res.status(201).json({ data: result.booking });
+  } catch (error: any) {
+    console.error('[public:book]', error);
+
+    if (error?.code === 'SLOT_ALREADY_HELD' || error?.code === 'SLOT_UNAVAILABLE' || error?.code === 'SLOT_NOT_AVAILABLE' || error?.code === 'SLOT_NOT_FOUND' || error?.code === 'TOKEN_EXPIRED') {
+      res.status(409).json({ error: error.message, code: error.code });
+      return;
+    }
+
+    res.status(500).json({ error: 'Failed to create booking' });
   }
 }

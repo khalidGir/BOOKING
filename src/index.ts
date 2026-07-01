@@ -1,5 +1,6 @@
 import { app } from './app.js';
 import { runDailyCacheBuild } from './services/scheduler.js';
+import { runReminderCheck } from './services/reminder-cron.js';
 import cron from 'node-cron';
 
 const PORT = parseInt(process.env.PORT ?? '3000', 10);
@@ -9,9 +10,13 @@ app.listen(PORT, () => {
 });
 
 cron.schedule('0 3 * * *', async () => {
-  console.log('[cron] starting daily slot cache rebuild');
+  console.log('[cron] daily slot cache rebuild');
   await runDailyCacheBuild();
-  console.log('[cron] daily slot cache rebuild complete');
+});
+
+cron.schedule('*/5 * * * *', async () => {
+  const sent = await runReminderCheck();
+  if (sent > 0) console.log(`[cron] sent ${sent} reminders`);
 });
 
 const today = new Date();

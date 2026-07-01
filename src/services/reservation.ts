@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { prisma } from '../utils/prisma.js';
+import { sendConfirmation } from './notification.js';
 import { redis, lockKey, SLOT_LOCK_TTL_SECONDS } from '../utils/redis.js';
 
 export interface ReserveSlotResult {
@@ -80,7 +81,7 @@ export async function releaseSlot(
 // ── Confirm: safe transaction with lock held ─────────────────────
 
 export interface BookingConfirmation {
-  bookingRef: string;
+  bookingRef?: string;
   customerName: string;
   customerEmail: string;
   customerPhone: string;
@@ -159,5 +160,30 @@ export async function confirmBooking(
 
   await releaseSlot(tenantId, staffId, startTimeISO, reservationToken);
 
+  sendConfirmation({
+    businessId: tenantId,
+    bookingId: booking.id,
+    customerEmail: data.customerEmail,
+    customerPhone: data.customerPhone,
+  }).catch(err => console.error('[notification] async confirm failed:', err));
+
   return { booking };
+}
+
+export async function publicBookSlot(
+  tenantId: string,
+  data: BookingConfirmation,
+): Promise<{ booking: any }> {
+  const result = await reserveSlot(tenantId, data.serviceId, data.staffId, data.startTime);
+
+  if (!result.success) {
+    const messages: Record<string, string> = {
+      already_held: 'This time slot is currently being booked by another customer',
+      not_available: 'This time slot is no longer available',
+      not_found: 'This time slot was not found',
+    };
+    throw Object.assign(new Error(messages[result.reason] || 'Slot is unavailable'), { code: 'SLOT_' + result.reason.toUpperCase() });
+  }
+
+  return confirmBooking(tenantId, result.reservationToken, data);
 }

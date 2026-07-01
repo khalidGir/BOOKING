@@ -75,6 +75,7 @@ model Business {
   defaultAvailability Json?    @default("[]")
   cancellationHours   Int      @default(0)
   reminderTiming      Json     @default("[1440, 60]")
+  corsWhitelist       Json     @default("[]")
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
   deletedAt           DateTime?
