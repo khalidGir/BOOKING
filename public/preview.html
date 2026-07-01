@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Booking Widget Preview</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f1f5f9;
+      color: #1a1a2e;
+      padding: 24px;
+    }
+    .container { max-width: 960px; margin: 0 auto; }
+    h1 { font-size: 1.5rem; margin-bottom: 8px; }
+    p { color: #64748b; margin-bottom: 16px; }
+    .tabs { display: flex; gap: 0; margin-bottom: 24px; border-bottom: 2px solid #e2e8f0; }
+    .tab {
+      padding: 10px 20px; cursor: pointer; border: none; background: none;
+      font-size: 0.875rem; font-weight: 600; color: #64748b;
+      border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.15s;
+    }
+    .tab:hover { color: #6c3aed; }
+    .tab.active { color: #6c3aed; border-bottom-color: #6c3aed; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .card {
+      background: #fff; border-radius: 12px; padding: 24px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 16px;
+    }
+    .card h3 { font-size: 1rem; margin-bottom: 12px; }
+    .snippet-box {
+      background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px;
+      font-family: 'Fira Code', 'Cascadia Code', monospace; font-size: 0.8125rem;
+      overflow-x: auto; white-space: pre-wrap; word-break: break-all;
+      user-select: all;
+    }
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 4px;
+      font-size: 0.6875rem; font-weight: 600; text-transform: uppercase;
+      background: #6c3aed20; color: #6c3aed; margin-bottom: 8px;
+    }
+    .preview-frame {
+      width: 100%; border: none; border-radius: 8px;
+      background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .params { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+    .params label { font-size: 0.8125rem; font-weight: 500; display: block; margin-bottom: 4px; }
+    .params input, .params select {
+      width: 100%; padding: 8px 12px; border: 1px solid #e2e8f0; border-radius: 6px;
+      font-size: 0.8125rem; font-family: inherit;
+    }
+    .params input:focus, .params select:focus { outline: none; border-color: #6c3aed; }
+    .btn {
+      padding: 8px 16px; border-radius: 6px; font-size: 0.8125rem; font-weight: 600;
+      border: none; cursor: pointer; background: #6c3aed; color: #fff;
+    }
+    .btn:hover { opacity: 0.9; }
+    .inline-widget-demo {
+      border: 2px dashed #cbd5e1; border-radius: 8px; padding: 16px;
+      min-height: 300px; background: #fafafa;
+    }
+    .inline-widget-demo::before {
+      content: 'Inline Widget Container (#booking-widget)';
+      display: block; font-size: 0.75rem; color: #94a3b8; margin-bottom: 8px;
+    }
+    .mode-toggle { display: flex; gap: 4px; background: #e2e8f0; border-radius: 6px; padding: 2px; width: fit-content; margin-bottom: 16px; }
+    .mode-btn { padding: 6px 14px; border: none; border-radius: 5px; cursor: pointer; font-size: 0.8125rem; background: transparent; color: #475569; font-weight: 500; }
+    .mode-btn.active { background: #fff; color: #1a1a2e; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>&#9670; Booking Widget Playground</h1>
+    <p>Test your embed widget configuration before sharing with clients.</p>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="config">Configuration</button>
+      <button class="tab" data-tab="snippet">Snippet</button>
+      <button class="tab" data-tab="preview">Live Preview</button>
+    </div>
+
+    <!-- CONFIG -->
+    <div class="tab-content active" id="tab-config">
+      <div class="card">
+        <h3>Widget Settings</h3>
+        <div class="params">
+          <div>
+            <label>Business Slug</label>
+            <input type="text" id="cfgSlug" value="demo" placeholder="your-business-slug">
+          </div>
+          <div>
+            <label>Theme</label>
+            <select id="cfgTheme">
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </div>
+          <div>
+            <label>Mode</label>
+            <select id="cfgMode">
+              <option value="floating">Floating Button (Modal)</option>
+              <option value="inline">Inline Container</option>
+            </select>
+          </div>
+          <div>
+            <label>Position (floating mode)</label>
+            <select id="cfgPosition">
+              <option value="right">Bottom Right</option>
+              <option value="left">Bottom Left</option>
+            </select>
+          </div>
+          <div>
+            <label>Widget Base URL</label>
+            <input type="text" id="cfgBase" value="http://localhost:3000" placeholder="http://localhost:3000">
+          </div>
+        </div>
+        <button class="btn" onclick="updatePreview()">Apply & Preview</button>
+      </div>
+
+      <div class="card">
+        <h3>CORS / CSP Whitelist</h3>
+        <p style="font-size:0.8125rem">To test the widget on this page, make sure your business's <code>corsWhitelist</code> includes your test domain (e.g., <code>localhost</code> or <code>127.0.0.1</code>).</p>
+        <p style="font-size:0.8125rem;margin-top:8px">Set it via: <code>PATCH /api/v1/admin/business</code> with <code>{ "corsWhitelist": ["localhost", "127.0.0.1"] }</code></p>
+      </div>
+    </div>
+
+    <!-- SNIPPET -->
+    <div class="tab-content" id="tab-snippet">
+      <div class="card">
+        <h3>Embed Script</h3>
+        <p>Copy this snippet and paste it into your client's website <code>&lt;body&gt;</code> tag.</p>
+        <div class="snippet-box" id="snippetBox">&lt;script src="http://localhost:3000/widget.js" data-business="demo" data-theme="light"&gt;&lt;/script&gt;</div>
+      </div>
+      <div class="card">
+        <h3>Inline Container</h3>
+        <p>For inline mode, add a container element where the widget should render:</p>
+        <div class="snippet-box">&lt;div id="booking-widget"&gt;&lt;/div&gt;</div>
+      </div>
+    </div>
+
+    <!-- PREVIEW -->
+    <div class="tab-content" id="tab-preview">
+      <div class="card">
+        <h3>Preview</h3>
+        <div class="mode-toggle" id="modeToggle">
+          <button class="mode-btn active" data-preview-mode="floating">Floating</button>
+          <button class="mode-btn" data-preview-mode="inline">Inline</button>
+        </div>
+        <div id="previewArea">
+          <div class="inline-widget-demo" id="booking-widget">
+            <p style="text-align:center;padding:40px;color:#94a3b8">Configure and apply settings above</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    var snippetBox = document.getElementById('snippetBox');
+    var tabs = document.querySelectorAll('.tab');
+    var tabContents = {
+      'config': document.getElementById('tab-config'),
+      'snippet': document.getElementById('tab-snippet'),
+      'preview': document.getElementById('tab-preview'),
+    };
+
+    tabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        tabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        Object.keys(tabContents).forEach(function(k) {
+          tabContents[k].classList.remove('active');
+        });
+        var id = tab.getAttribute('data-tab');
+        if (tabContents[id]) tabContents[id].classList.add('active');
+      });
+    });
+
+    document.querySelectorAll('[data-preview-mode]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        document.querySelectorAll('[data-preview-mode]').forEach(function(b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+        var mode = btn.getAttribute('data-preview-mode');
+        var container = document.getElementById('booking-widget');
+        if (mode === 'floating') {
+          container.innerHTML = '<p style="text-align:center;padding:40px;color:#94a3b8">Floating button will appear bottom-' + document.getElementById('cfgPosition').value + ' of the viewport</p>';
+          container.classList.add('inline-widget-demo');
+        } else {
+          container.innerHTML = '<p style="text-align:center;padding:40px;color:#94a3b8">Inline widget will render here</p>';
+          container.classList.add('inline-widget-demo');
+        }
+      });
+    });
+
+    function updatePreview() {
+      var slug = document.getElementById('cfgSlug').value || 'demo';
+      var theme = document.getElementById('cfgTheme').value;
+      var mode = document.getElementById('cfgMode').value;
+      var base = document.getElementById('cfgBase').value || 'http://localhost:3000';
+      var position = document.getElementById('cfgPosition').value;
+
+      var s = base.replace(/\/+$/, '');
+      var src = s + '/widget.js';
+
+      var attrs = 'data-business="' + slug.replace(/"/g, '&quot;') + '" data-theme="' + theme + '"';
+      if (mode === 'floating') {
+        attrs += ' data-position="' + position + '"';
+      }
+      attrs += ' data-base="' + s.replace(/"/g, '&quot;') + '"';
+
+      snippetBox.textContent = '<script src="' + s + '/widget.js" ' + attrs + '><\/script>';
+
+      var previewArea = document.getElementById('previewArea');
+      var container = document.getElementById('booking-widget');
+
+      if (mode === 'inline') {
+        container.innerHTML = '';
+        container.classList.add('inline-widget-demo');
+      } else {
+        container.innerHTML = '<p style="text-align:center;padding:40px;color:#94a3b8">Floating button will appear at bottom-' + position + '</p>';
+        container.classList.add('inline-widget-demo');
+      }
+
+      // Remove any previously injected widget script
+      var oldScript = document.querySelector('[data-bw-injected]');
+      if (oldScript) oldScript.remove();
+
+      var script = document.createElement('script');
+      script.src = src;
+      script.setAttribute('data-business', slug);
+      script.setAttribute('data-theme', theme);
+      script.setAttribute('data-base', s);
+      if (mode === 'floating') {
+        script.setAttribute('data-position', position);
+        script.setAttribute('data-open', '');
+      }
+      script.setAttribute('data-bw-injected', '');
+      document.body.appendChild(script);
+
+      snippetBox.parentElement.classList.add('active');
+    }
+
+    // load initial preview
+    updatePreview();
+  </script>
+</body>
+</html>

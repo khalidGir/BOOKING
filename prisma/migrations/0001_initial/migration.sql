@@ -35,6 +35,7 @@ CREATE TABLE "Business" (
     "defaultAvailability" JSONB DEFAULT '[]',
     "cancellationHours" INTEGER NOT NULL DEFAULT 0,
     "reminderTiming" JSONB DEFAULT '[1440, 60]',
+    "corsWhitelist" JSONB DEFAULT '[]',
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMPTZ NOT NULL,
     "deletedAt" TIMESTAMPTZ,

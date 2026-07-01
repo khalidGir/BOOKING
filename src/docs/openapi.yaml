@@ -1,0 +1,1590 @@
+openapi: 3.1.0
+info:
+  title: Booking API
+  version: 1.0.0
+  description: |
+    Multi-tenant SaaS booking system. Businesses manage services, staff, and availability.
+    Customers book appointments through an embed widget or public API.
+
+    ## Authentication
+    - **Public** endpoints require no auth (widget, public booking, manage links).
+    - **JWT** endpoints require `Authorization: Bearer <token>` header.
+    - Roles: `SUPER_ADMIN`, `BUSINESS_ADMIN`, `STAFF`.
+
+    ## Multi-Tenant Isolation
+    All admin/scoped endpoints automatically inject `businessId` from the JWT.
+    Super Admin can bypass tenant scoping via dedicated endpoints.
+servers:
+  - url: http://localhost:3000
+    description: Local development
+  - url: https://api.booking.example.com
+    description: Production
+
+paths:
+
+  # ──────────────────────────────────────────
+  #  WIDGET & STATIC
+  # ──────────────────────────────────────────
+  /widget.js:
+    get:
+      summary: Embed Widget Script
+      description: |
+        Vanilla JS snippet for third-party sites. Injects a sandboxed iframe
+        pointing to `/embed/:slug`. Accepts `data-business`, `data-theme`,
+        `data-position`, `data-base` attributes on the script tag.
+      tags: [Widget]
+      responses:
+        '200':
+          description: JavaScript file
+          content:
+            application/javascript:
+              schema:
+                type: string
+
+  /public/preview.html:
+    get:
+      summary: Widget Preview Playground
+      description: Internal test page for configuring and previewing the embed widget.
+      tags: [Widget]
+      responses:
+        '200':
+          description: HTML page
+
+  /embed/{slug}:
+    get:
+      summary: Embed Booking Page
+      description: |
+        Full booking UI rendered inside an iframe. CSP `frame-ancestors` is set
+        based on the business's `corsWhitelist`. Calls the public API internally.
+      tags: [Widget]
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+          description: Business slug
+        - name: theme
+          in: query
+          schema: { type: string, enum: [light, dark], default: light }
+      responses:
+        '200':
+          description: HTML page
+
+  # ──────────────────────────────────────────
+  #  PUBLIC API
+  # ──────────────────────────────────────────
+  /api/v1/public/businesses/{slug}/services:
+    get:
+      summary: List Business Services
+      description: Get active services for a business, grouped by category.
+      tags: [Public]
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Business info + services
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      business:
+                        $ref: '#/components/schemas/BusinessPublic'
+                      services:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ServicePublic'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/public/businesses/{slug}/slots:
+    get:
+      summary: Get Available Slots
+      description: Fetch pre-computed available time slots for a service/date.
+      tags: [Public]
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+        - name: serviceId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: date
+          in: query
+          required: true
+          schema: { type: string, format: date }
+          description: 'YYYY-MM-DD'
+        - name: staffId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Available slots
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SlotCacheEntry'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/public/businesses/{slug}/book:
+    post:
+      summary: Create Public Booking
+      description: |
+        Single-step booking for customers. Acquires a Redis lock, verifies slot
+        availability, creates the booking in a serializable transaction, and
+        releases the lock. Returns the booking with a manage token.
+      tags: [Public]
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublicBookingInput'
+      responses:
+        '201':
+          description: Booking created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Booking'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Slot conflict
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  code:
+                    type: string
+                    enum: [SLOT_ALREADY_HELD, SLOT_UNAVAILABLE, SLOT_NOT_FOUND]
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/public/bookings/manage/{token}:
+    get:
+      summary: Get Booking by Manage Token
+      description: Retrieve booking details using the cryptosecure manage token (no auth required).
+      tags: [Public]
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Booking details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/BookingWithRelations'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    post:
+      summary: Cancel Booking by Manage Token
+      description: |
+        Cancel a booking using the manage token. Enforces the business's
+        `cancellationHours` policy.
+      tags: [Public]
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Booking cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      status: { type: string, enum: [CANCELLED] }
+        '400':
+          description: Already cancelled or cancellation window passed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  canCancel: { type: boolean }
+                  hoursUntilAppointment: { type: number }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ──────────────────────────────────────────
+  #  HEALTH
+  # ──────────────────────────────────────────
+  /health:
+    get:
+      summary: Health Check
+      tags: [System]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Server status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  timestamp: { type: string, format: date-time }
+
+  # ──────────────────────────────────────────
+  #  SERVICES (ADMIN)
+  # ──────────────────────────────────────────
+  /api/services:
+    get:
+      summary: List Active Services
+      description: Scoped to the authenticated business.
+      tags: [Services]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of active services
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Service'
+    post:
+      summary: Create Service
+      tags: [Services]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateServiceInput'
+      responses:
+        '201':
+          description: Service created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Service'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+  /api/services/{id}:
+    get:
+      summary: Get Service
+      tags: [Services]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Service details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Service'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      summary: Update Service
+      tags: [Services]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateServiceInput'
+      responses:
+        '200':
+          description: Service updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Service'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/services/{id}/toggle:
+    post:
+      summary: Toggle Service Active Status
+      tags: [Services]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Service toggled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Service'
+
+  /api/services/admin/all:
+    get:
+      summary: List All Services (Super Admin)
+      description: Bypasses tenant scoping. Requires SUPER_ADMIN role.
+      tags: [Services]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: All services across businesses
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Service'
+
+  # ──────────────────────────────────────────
+  #  BOOKINGS (ADMIN)
+  # ──────────────────────────────────────────
+  /api/v1/bookings/reserve:
+    post:
+      summary: Reserve a Slot
+      description: |
+        Phase 1 of the three-phase booking protocol.
+        Acquires a Redis NX lock on the slot. Returns a reservation token
+        that must be presented in the subsequent confirm request.
+      tags: [Bookings]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [serviceId, startTime]
+              properties:
+                serviceId: { type: string, format: uuid }
+                staffId: { type: string, format: uuid, nullable: true }
+                startTime: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Slot reserved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reservationToken: { type: string, format: uuid }
+                  expiresAt: { type: string, format: date-time }
+        '409':
+          description: Slot already held or not available
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, enum: [false] }
+                  reason:
+                    type: string
+                    enum: [already_held, not_available, not_found]
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+  /api/v1/bookings/confirm:
+    post:
+      summary: Confirm a Booking
+      description: |
+        Phase 2 of the three-phase protocol.
+        Verifies the reservation token via Lua script, creates the booking
+        in a serializable DB transaction with SELECT FOR UPDATE, marks the
+        SlotCache as unavailable, and releases the Redis lock.
+      tags: [Bookings]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [serviceId, startTime, reservationToken, duration, customer]
+              properties:
+                serviceId: { type: string, format: uuid }
+                staffId: { type: string, format: uuid, nullable: true }
+                locationId: { type: string, format: uuid, nullable: true }
+                startTime: { type: string, format: date-time }
+                reservationToken: { type: string, format: uuid }
+                duration: { type: integer, minimum: 1 }
+                price: { type: number, minimum: 0, default: 0 }
+                customFieldAnswers: { type: object, nullable: true }
+                customer:
+                  type: object
+                  required: [name, email, phone]
+                  properties:
+                    name: { type: string }
+                    email: { type: string, format: email }
+                    phone: { type: string }
+                    notes: { type: string }
+      responses:
+        '201':
+          description: Booking confirmed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Booking'
+        '409':
+          description: Token expired or slot unavailable
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+  /api/v1/bookings/release:
+    post:
+      summary: Release a Reservation
+      description: Phase 3 — release a held slot without confirming.
+      tags: [Bookings]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [startTime, reservationToken]
+              properties:
+                staffId: { type: string, format: uuid, nullable: true }
+                startTime: { type: string, format: date-time }
+                reservationToken: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Lock released
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  released: { type: boolean }
+
+  /api/v1/bookings/{bookingId}/cancel:
+    post:
+      summary: Cancel Booking (Admin)
+      tags: [Bookings]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: bookingId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Booking cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      status: { type: string, enum: [CANCELLED] }
+        '400':
+          description: Already cancelled
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ──────────────────────────────────────────
+  #  ADMIN — STAFF
+  # ──────────────────────────────────────────
+  /api/v1/admin/staff:
+    get:
+      summary: List Staff
+      tags: [Admin / Staff]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Staff list with service assignments
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Staff'
+    post:
+      summary: Create Staff
+      tags: [Admin / Staff]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStaffInput'
+      responses:
+        '201':
+          description: Staff created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Staff'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: Email conflict
+
+  /api/v1/admin/staff/{id}:
+    get:
+      summary: Get Staff
+      tags: [Admin / Staff]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Staff details with availabilities and overrides
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/StaffDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      summary: Update Staff
+      tags: [Admin / Staff]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStaffInput'
+      responses:
+        '200':
+          description: Staff updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Staff'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Email conflict
+
+  /api/v1/admin/staff/{id}/toggle:
+    post:
+      summary: Toggle Staff Active
+      tags: [Admin / Staff]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Staff toggled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Staff'
+
+  # ──────────────────────────────────────────
+  #  ADMIN — STAFF AVAILABILITY
+  # ──────────────────────────────────────────
+  /api/v1/admin/staff-availability:
+    post:
+      summary: Create Availability
+      tags: [Admin / Availability]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAvailabilityInput'
+      responses:
+        '201':
+          description: Availability created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/StaffAvailability'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+  /api/v1/admin/staff-availability/{id}:
+    patch:
+      summary: Update Availability
+      tags: [Admin / Availability]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAvailabilityInput'
+      responses:
+        '200':
+          description: Availability updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/StaffAvailability'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      summary: Delete Availability
+      tags: [Admin / Availability]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Availability deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      deleted: { type: boolean }
+
+  # ──────────────────────────────────────────
+  #  ADMIN — STAFF OVERRIDES
+  # ──────────────────────────────────────────
+  /api/v1/admin/staff-override:
+    post:
+      summary: Create Override
+      tags: [Admin / Overrides]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOverrideInput'
+      responses:
+        '201':
+          description: Override created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/StaffOverride'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+  /api/v1/admin/staff-override/{id}:
+    patch:
+      summary: Update Override
+      tags: [Admin / Overrides]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOverrideInput'
+      responses:
+        '200':
+          description: Override updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/StaffOverride'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      summary: Delete Override
+      tags: [Admin / Overrides]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Override deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      deleted: { type: boolean }
+
+  # ──────────────────────────────────────────
+  #  ADMIN — LOCATIONS
+  # ──────────────────────────────────────────
+  /api/v1/admin/locations:
+    get:
+      summary: List Locations
+      tags: [Admin / Locations]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Active locations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Location'
+    post:
+      summary: Create Location
+      tags: [Admin / Locations]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLocationInput'
+      responses:
+        '201':
+          description: Location created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Location'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+  /api/v1/admin/locations/{id}:
+    get:
+      summary: Get Location
+      tags: [Admin / Locations]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Location with service assignments
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/LocationDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      summary: Update Location
+      tags: [Admin / Locations]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateLocationInput'
+      responses:
+        '200':
+          description: Location updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Location'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      summary: Delete Location (soft)
+      tags: [Admin / Locations]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Location deactivated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      deleted: { type: boolean }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ──────────────────────────────────────────
+  #  ADMIN — CATEGORIES
+  # ──────────────────────────────────────────
+  /api/v1/admin/categories:
+    get:
+      summary: List Categories
+      tags: [Admin / Categories]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Categories with service count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Category'
+    post:
+      summary: Create Category
+      tags: [Admin / Categories]
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                description: { type: string }
+                sortOrder: { type: integer, default: 0 }
+      responses:
+        '201':
+          description: Category created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Category'
+
+  /api/v1/admin/categories/{id}:
+    patch:
+      summary: Update Category
+      tags: [Admin / Categories]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string }
+                sortOrder: { type: integer }
+      responses:
+        '200':
+          description: Category updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Category'
+    delete:
+      summary: Delete Category
+      tags: [Admin / Categories]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Category deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      deleted: { type: boolean }
+        '400':
+          description: Category has services — remove them first
+
+  # ──────────────────────────────────────────
+  #  ADMIN — BUSINESS SETTINGS
+  # ──────────────────────────────────────────
+  /api/v1/admin/business:
+    get:
+      summary: Get Business Settings
+      tags: [Admin / Business]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Business settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Business'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      summary: Update Business Settings
+      tags: [Admin / Business]
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBusinessInput'
+      responses:
+        '200':
+          description: Business updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Business'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT from `/auth/login`. Contains `userId`, `businessId`, `role`.
+        Roles: `SUPER_ADMIN`, `BUSINESS_ADMIN`, `STAFF`.
+
+  responses:
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string }
+              details:
+                type: object
+                description: Zod field-level errors
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string }
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string }
+
+  schemas:
+    # ── BUSINESS ────────────────────────────
+    BusinessPublic:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        logoUrl: { type: string, nullable: true }
+        brandColor: { type: string }
+        timezone: { type: string }
+
+    Business:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        email: { type: string }
+        phone: { type: string, nullable: true }
+        address: { type: string, nullable: true }
+        timezone: { type: string }
+        logoUrl: { type: string, nullable: true }
+        brandColor: { type: string }
+        planType:
+          type: string
+          enum: [FREE, BASIC, PREMIUM]
+        status: { type: string }
+        defaultAvailability: { type: array, items: { type: object } }
+        cancellationHours: { type: integer }
+        reminderTiming:
+          type: array
+          items: { type: integer }
+          description: Minutes before appointment (e.g. [1440, 60])
+        corsWhitelist:
+          type: array
+          items: { type: string }
+          description: Allowed embed domains
+        createdAt: { type: string, format: date-time }
+
+    UpdateBusinessInput:
+      type: object
+      properties:
+        name: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string, nullable: true }
+        address: { type: string, nullable: true }
+        timezone: { type: string }
+        logoUrl: { type: string, nullable: true }
+        brandColor: { type: string }
+        defaultAvailability:
+          type: array
+          items:
+            type: object
+            properties:
+              dayOfWeek: { type: integer, minimum: 0, maximum: 6 }
+              startTime: { type: string }
+              endTime: { type: string }
+        cancellationHours: { type: integer, minimum: 0 }
+        reminderTiming:
+          type: array
+          items: { type: integer, minimum: 0 }
+        corsWhitelist:
+          type: array
+          items: { type: string }
+
+    # ── SERVICE ─────────────────────────────
+    ServicePublic:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        duration: { type: integer }
+        price: { type: string }
+        color: { type: string }
+        bufferBefore: { type: integer }
+        bufferAfter: { type: integer }
+        maxPerSlot: { type: integer }
+        isActive: { type: boolean }
+        sortOrder: { type: integer }
+        category:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            sortOrder: { type: integer }
+        customFields:
+          type: array
+          items:
+            $ref: '#/components/schemas/CustomField'
+
+    Service:
+      allOf:
+        - $ref: '#/components/schemas/ServicePublic'
+        - properties:
+            businessId: { type: string, format: uuid }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+
+    CreateServiceInput:
+      type: object
+      required: [name, duration, price]
+      properties:
+        name: { type: string, minLength: 1 }
+        description: { type: string, nullable: true }
+        duration: { type: integer, minimum: 1 }
+        price: { type: number, minimum: 0 }
+        color: { type: string, pattern: '^#[0-9a-fA-F]{6}$' }
+        bufferBefore: { type: integer, minimum: 0, default: 0 }
+        bufferAfter: { type: integer, minimum: 0, default: 0 }
+        maxPerSlot: { type: integer, minimum: 1, default: 1 }
+        categoryId: { type: string, format: uuid, nullable: true }
+        sortOrder: { type: integer, minimum: 0, default: 0 }
+        isActive: { type: boolean, default: true }
+
+    UpdateServiceInput:
+      type: object
+      properties:
+        name: { type: string, minLength: 1 }
+        description: { type: string, nullable: true }
+        duration: { type: integer, minimum: 1 }
+        price: { type: number, minimum: 0 }
+        color: { type: string }
+        bufferBefore: { type: integer, minimum: 0 }
+        bufferAfter: { type: integer, minimum: 0 }
+        maxPerSlot: { type: integer, minimum: 1 }
+        categoryId: { type: string, format: uuid, nullable: true }
+        sortOrder: { type: integer, minimum: 0 }
+        isActive: { type: boolean }
+
+    CustomField:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string }
+        fieldType:
+          type: string
+          enum: [TEXT, TEXTAREA, SELECT, CHECKBOX, DATE]
+        isRequired: { type: boolean }
+        options: { type: array, items: { type: string }, nullable: true }
+        sortOrder: { type: integer }
+
+    # ── STAFF ───────────────────────────────
+    Staff:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        photoUrl: { type: string, nullable: true }
+        color: { type: string }
+        bio: { type: string, nullable: true }
+        isActive: { type: boolean }
+        bufferBefore: { type: integer }
+        bufferAfter: { type: integer }
+        services:
+          type: array
+          items:
+            type: object
+            properties:
+              service:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  name: { type: string }
+        _count:
+          type: object
+          properties:
+            bookings: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    StaffDetail:
+      allOf:
+        - $ref: '#/components/schemas/Staff'
+        - properties:
+            availabilities:
+              type: array
+              items:
+                $ref: '#/components/schemas/StaffAvailability'
+            overrides:
+              type: array
+              items:
+                $ref: '#/components/schemas/StaffOverride'
+
+    CreateStaffInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+        email: { type: string, format: email, nullable: true }
+        phone: { type: string, nullable: true }
+        photoUrl: { type: string, format: uri, nullable: true }
+        color: { type: string }
+        bio: { type: string, nullable: true }
+        bufferBefore: { type: integer, minimum: 0 }
+        bufferAfter: { type: integer, minimum: 0 }
+        serviceIds:
+          type: array
+          items: { type: string, format: uuid }
+
+    UpdateStaffInput:
+      type: object
+      properties:
+        name: { type: string, minLength: 1 }
+        email: { type: string, format: email, nullable: true }
+        phone: { type: string, nullable: true }
+        photoUrl: { type: string, format: uri, nullable: true }
+        color: { type: string }
+        bio: { type: string, nullable: true }
+        bufferBefore: { type: integer, minimum: 0 }
+        bufferAfter: { type: integer, minimum: 0 }
+        isActive: { type: boolean }
+        serviceIds:
+          type: array
+          items: { type: string, format: uuid }
+
+    # ── AVAILABILITY ────────────────────────
+    StaffAvailability:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        staffId: { type: string, format: uuid }
+        dayOfWeek: { type: integer, description: '0=Sun .. 6=Sat' }
+        startTime: { type: string, format: date-time }
+        endTime: { type: string, format: date-time }
+        isActive: { type: boolean }
+
+    CreateAvailabilityInput:
+      type: object
+      required: [staffId, dayOfWeek, startTime, endTime]
+      properties:
+        staffId: { type: string, format: uuid }
+        dayOfWeek: { type: integer, minimum: 0, maximum: 6 }
+        startTime: { type: string, pattern: '^\d{2}:\d{2}$', description: 'HH:mm' }
+        endTime: { type: string, pattern: '^\d{2}:\d{2}$', description: 'HH:mm' }
+        isActive: { type: boolean }
+
+    UpdateAvailabilityInput:
+      type: object
+      properties:
+        dayOfWeek: { type: integer, minimum: 0, maximum: 6 }
+        startTime: { type: string, pattern: '^\d{2}:\d{2}$' }
+        endTime: { type: string, pattern: '^\d{2}:\d{2}$' }
+        isActive: { type: boolean }
+
+    # ── OVERRIDE ────────────────────────────
+    StaffOverride:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        staffId: { type: string, format: uuid }
+        date: { type: string, format: date }
+        startTime: { type: string, format: date-time, nullable: true }
+        endTime: { type: string, format: date-time, nullable: true }
+        reason: { type: string, nullable: true }
+
+    CreateOverrideInput:
+      type: object
+      required: [staffId, date]
+      properties:
+        staffId: { type: string, format: uuid }
+        date: { type: string, format: date, description: 'YYYY-MM-DD' }
+        startTime: { type: string, pattern: '^\d{2}:\d{2}$', nullable: true }
+        endTime: { type: string, pattern: '^\d{2}:\d{2}$', nullable: true }
+        reason: { type: string, nullable: true }
+
+    UpdateOverrideInput:
+      type: object
+      properties:
+        startTime: { type: string, pattern: '^\d{2}:\d{2}$', nullable: true }
+        endTime: { type: string, pattern: '^\d{2}:\d{2}$', nullable: true }
+        reason: { type: string, nullable: true }
+
+    # ── LOCATION ────────────────────────────
+    Location:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        address: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        virtualLink: { type: string, nullable: true }
+        instructions: { type: string, nullable: true }
+        isDefault: { type: boolean }
+        isActive: { type: boolean }
+        createdAt: { type: string, format: date-time }
+
+    LocationDetail:
+      allOf:
+        - $ref: '#/components/schemas/Location'
+        - properties:
+            services:
+              type: array
+              items:
+                type: object
+                properties:
+                  service:
+                    type: object
+                    properties:
+                      id: { type: string, format: uuid }
+                      name: { type: string }
+
+    CreateLocationInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+        address: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        virtualLink: { type: string, format: uri, nullable: true }
+        instructions: { type: string, nullable: true }
+        isDefault: { type: boolean }
+        serviceIds:
+          type: array
+          items: { type: string, format: uuid }
+
+    UpdateLocationInput:
+      type: object
+      properties:
+        name: { type: string, minLength: 1 }
+        address: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        virtualLink: { type: string, format: uri, nullable: true }
+        instructions: { type: string, nullable: true }
+        isDefault: { type: boolean }
+        isActive: { type: boolean }
+        serviceIds:
+          type: array
+          items: { type: string, format: uuid }
+
+    # ── CATEGORY ────────────────────────────
+    Category:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        sortOrder: { type: integer }
+        _count:
+          type: object
+          properties:
+            services: { type: integer }
+
+    # ── BOOKING ─────────────────────────────
+    Booking:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        bookingRef: { type: string }
+        manageToken: { type: string, format: uuid }
+        customerName: { type: string }
+        customerEmail: { type: string }
+        customerPhone: { type: string }
+        notes: { type: string, nullable: true }
+        customFieldAnswers: { type: object, nullable: true }
+        startTime: { type: string, format: date-time }
+        endTime: { type: string, format: date-time }
+        duration: { type: integer }
+        price: { type: string }
+        status:
+          type: string
+          enum: [PENDING, CONFIRMED, COMPLETED, CANCELLED, NO_SHOW]
+        cancellationReason: { type: string, nullable: true }
+        cancelledBy:
+          type: string
+          nullable: true
+          enum: [CUSTOMER, BUSINESS]
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    BookingWithRelations:
+      allOf:
+        - $ref: '#/components/schemas/Booking'
+        - properties:
+            service:
+              type: object
+              properties:
+                id: { type: string, format: uuid }
+                name: { type: string }
+            staff:
+              type: object
+              nullable: true
+              properties:
+                id: { type: string, format: uuid }
+                name: { type: string }
+            location:
+              type: object
+              nullable: true
+              properties:
+                id: { type: string, format: uuid }
+                name: { type: string }
+                address: { type: string, nullable: true }
+            business:
+              type: object
+              properties:
+                id: { type: string, format: uuid }
+                name: { type: string }
+                slug: { type: string }
+                cancellationHours: { type: integer }
+                timezone: { type: string }
+                phone: { type: string, nullable: true }
+                email: { type: string }
+
+    PublicBookingInput:
+      type: object
+      required: [serviceId, startTime, duration, price, customerName, customerEmail, customerPhone]
+      properties:
+        serviceId: { type: string, format: uuid }
+        staffId: { type: string, format: uuid, nullable: true }
+        startTime: { type: string, format: date-time }
+        duration: { type: integer, minimum: 1 }
+        price: { type: number, minimum: 0 }
+        customerName: { type: string }
+        customerEmail: { type: string, format: email }
+        customerPhone: { type: string }
+        notes: { type: string }
+        customFieldAnswers: { type: object }
+
+    # ── SLOT CACHE ──────────────────────────
+    SlotCacheEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        startTime: { type: string, format: date-time }
+        endTime: { type: string, format: date-time }
+        staffId: { type: string, format: uuid, nullable: true }
